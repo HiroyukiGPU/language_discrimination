@@ -7,10 +7,15 @@
 
 - **フォルダー選択** — ネイティブのフォルダー選択ダイアログから対象を指定
 - **言語判定** — 拡張子からファイルの言語を判定し、言語ごとにファイル数を集計
-- **フレームワーク判定** — `package.json` / `Cargo.toml` / `pubspec.yaml` /
-  `requirements.txt` / `pyproject.toml` / `composer.json` などの設定ファイルや
-  構成ファイルを読んで、React・Next.js・Vue・Nuxt・Flutter・Django・FastAPI・
-  Laravel・Tauri などを検出
+- **技術スタック判定** — 設定ファイルや構成を読んで、3カテゴリに分けて検出
+  - **フレームワーク**: React / Next.js / Vue / Nuxt / Svelte / Astro / Flutter /
+    Django / FastAPI / Laravel / Tauri / Express / NestJS など
+  - **バックエンド・サービス**: Firebase / Supabase / Vercel / Netlify / AWS Amplify /
+    AWS SDK / Google Cloud / Cloudflare Workers / Clerk / Auth0 / Stripe / Sentry /
+    OpenAI / Anthropic など（`firebase.json` / `vercel.json` / `supabase/` ディレクトリ /
+    `package.json` の依存など複数の手がかりから判定）
+  - **データベース・ORM**: Prisma / Drizzle / MongoDB / PostgreSQL / MySQL / Redis /
+    SQLite / PlanetScale など
 - **結果表示** — ドーナツチャートで割合、棒グラフでファイル数、フレームワーク一覧、
   言語でフィルタできるファイル一覧を表示
 - **除外** — `node_modules` / `.git` / `dist` / `target` などのディレクトリは自動で除外

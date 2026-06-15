@@ -286,6 +286,13 @@ pub fn analyze(root: &str) -> Result<AnalysisResult, String> {
     });
 
     for entry in walker.filter_map(|e| e.ok()) {
+        if entry.file_type().is_dir() {
+            // ディレクトリ名自体が手がかりになるサービスを判定する。
+            if let Some(name) = entry.file_name().to_str() {
+                detect_dir_technology(name, &mut technologies);
+            }
+            continue;
+        }
         if !entry.file_type().is_file() {
             continue;
         }
@@ -347,37 +354,101 @@ pub fn analyze(root: &str) -> Result<AnalysisResult, String> {
     })
 }
 
-/// 設定ファイルやフォルダー構成からフレームワークを判定する。
-fn detect_frameworks(file_name: &str, path: &Path, out: &mut Vec<FrameworkHit>) {
-    let mut push = |name: &str, by: &str| {
-        out.push(FrameworkHit {
-            name: name.to_string(),
-            detected_by: by.to_string(),
-        });
-    };
+fn push_tech(out: &mut Vec<TechHit>, name: &str, category: &str, by: &str) {
+    out.push(TechHit {
+        name: name.to_string(),
+        category: category.to_string(),
+        detected_by: by.to_string(),
+    });
+}
 
+/// 依存名のリストをルール表に突き合わせて該当技術を push する。
+/// ルールの `pat` が `/` で終わる場合は前方一致（スコープ付きパッケージ用）。
+fn match_dep_rules(
+    deps: &[String],
+    rules: &[(&str, &str, &str)],
+    source: &str,
+    out: &mut Vec<TechHit>,
+) {
+    for (pat, name, cat) in rules {
+        let hit = if pat.ends_with('/') {
+            deps.iter().any(|d| d.starts_with(pat))
+        } else {
+            deps.iter().any(|d| d == pat)
+        };
+        if hit {
+            push_tech(out, name, cat, source);
+        }
+    }
+}
+
+/// 設定ファイルやフォルダー構成から技術（フレームワーク・バックエンド・DB）を判定する。
+fn detect_technologies(file_name: &str, path: &Path, out: &mut Vec<TechHit>) {
     match file_name {
-        "package.json" => detect_from_package_json(path, out),
-        "pubspec.yaml" | "pubspec.yml" => push("Flutter", file_name),
-        "Cargo.toml" => detect_from_cargo_toml(path, out),
-        "requirements.txt" => detect_python_deps(path, out, file_name),
-        "pyproject.toml" => detect_python_deps(path, out, file_name),
-        "Gemfile" => push("Ruby on Rails?", file_name), // 大まかな目安
-        "go.mod" => push("Go modules", file_name),
-        "composer.json" => detect_from_composer_json(path, out),
-        "nuxt.config.js" | "nuxt.config.ts" => push("Nuxt", file_name),
-        "next.config.js" | "next.config.ts" | "next.config.mjs" => push("Next.js", file_name),
-        "vite.config.js" | "vite.config.ts" => push("Vite", file_name),
-        "svelte.config.js" => push("Svelte", file_name),
-        "angular.json" => push("Angular", file_name),
-        "tauri.conf.json" => push("Tauri", file_name),
-        "Dockerfile" => push("Docker", file_name),
+        // 依存関係を読むもの。
+        "package.json" => detect_npm(path, out),
+        "Cargo.toml" => detect_cargo(path, out),
+        "requirements.txt" | "pyproject.toml" | "Pipfile" => {
+            detect_python_deps(path, out, file_name)
+        }
+        "composer.json" => detect_composer(path, out),
+
+        // ファイルの存在自体が手がかりになるもの: フレームワーク。
+        "pubspec.yaml" | "pubspec.yml" => push_tech(out, "Flutter", CAT_FRAMEWORK, file_name),
+        "nuxt.config.js" | "nuxt.config.ts" => push_tech(out, "Nuxt", CAT_FRAMEWORK, file_name),
+        "next.config.js" | "next.config.ts" | "next.config.mjs" => {
+            push_tech(out, "Next.js", CAT_FRAMEWORK, file_name)
+        }
+        "vite.config.js" | "vite.config.ts" => push_tech(out, "Vite", CAT_FRAMEWORK, file_name),
+        "svelte.config.js" => push_tech(out, "Svelte", CAT_FRAMEWORK, file_name),
+        "astro.config.mjs" | "astro.config.ts" => push_tech(out, "Astro", CAT_FRAMEWORK, file_name),
+        "angular.json" => push_tech(out, "Angular", CAT_FRAMEWORK, file_name),
+        "tauri.conf.json" => push_tech(out, "Tauri", CAT_FRAMEWORK, file_name),
+
+        // ファイルの存在が手がかり: バックエンド・サービス／ホスティング。
+        "firebase.json" | ".firebaserc" | "firestore.rules" | "firestore.indexes.json" => {
+            push_tech(out, "Firebase", CAT_BACKEND, file_name)
+        }
+        "vercel.json" => push_tech(out, "Vercel", CAT_BACKEND, file_name),
+        "netlify.toml" => push_tech(out, "Netlify", CAT_BACKEND, file_name),
+        "aws-exports.js" | "amplifyconfiguration.json" => {
+            push_tech(out, "AWS Amplify", CAT_BACKEND, file_name)
+        }
+        "wrangler.toml" | "wrangler.jsonc" | "wrangler.json" => {
+            push_tech(out, "Cloudflare Workers", CAT_BACKEND, file_name)
+        }
+        "serverless.yml" | "serverless.yaml" => {
+            push_tech(out, "Serverless Framework", CAT_BACKEND, file_name)
+        }
+        "render.yaml" => push_tech(out, "Render", CAT_BACKEND, file_name),
+        "railway.json" | "railway.toml" => push_tech(out, "Railway", CAT_BACKEND, file_name),
+        "fly.toml" => push_tech(out, "Fly.io", CAT_BACKEND, file_name),
+        "Procfile" => push_tech(out, "Heroku", CAT_BACKEND, file_name),
+        "app.yaml" => push_tech(out, "Google App Engine", CAT_BACKEND, file_name),
+
+        // インフラ・その他。
+        "Dockerfile" => push_tech(out, "Docker", CAT_BACKEND, file_name),
+        "docker-compose.yml" | "docker-compose.yaml" | "compose.yaml" => {
+            push_tech(out, "Docker Compose", CAT_BACKEND, file_name)
+        }
+        "go.mod" => push_tech(out, "Go modules", CAT_FRAMEWORK, file_name),
+
         _ => {}
     }
 }
 
-/// package.json の dependencies / devDependencies からフレームワークを判定。
-fn detect_from_package_json(path: &Path, out: &mut Vec<FrameworkHit>) {
+/// ディレクトリ名から推測できるサービスを判定する。
+fn detect_dir_technology(dir_name: &str, out: &mut Vec<TechHit>) {
+    match dir_name {
+        "supabase" => push_tech(out, "Supabase", CAT_BACKEND, "supabase/"),
+        "amplify" => push_tech(out, "AWS Amplify", CAT_BACKEND, "amplify/"),
+        "functions" => {} // 汎用すぎるので判定しない
+        _ => {}
+    }
+}
+
+/// package.json の dependencies / devDependencies から技術を判定する。
+fn detect_npm(path: &Path, out: &mut Vec<TechHit>) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return,
@@ -394,41 +465,89 @@ fn detect_from_package_json(path: &Path, out: &mut Vec<FrameworkHit>) {
         }
     }
 
-    // 依存名 → フレームワーク名の対応。
-    let map: &[(&str, &str)] = &[
-        ("next", "Next.js"),
-        ("nuxt", "Nuxt"),
-        ("@angular/core", "Angular"),
-        ("vue", "Vue"),
-        ("svelte", "Svelte"),
-        ("react-native", "React Native"),
-        ("react", "React"),
-        ("@remix-run/react", "Remix"),
-        ("gatsby", "Gatsby"),
-        ("astro", "Astro"),
-        ("solid-js", "SolidJS"),
-        ("vite", "Vite"),
-        ("webpack", "Webpack"),
-        ("express", "Express"),
-        ("@nestjs/core", "NestJS"),
-        ("koa", "Koa"),
-        ("fastify", "Fastify"),
-        ("electron", "Electron"),
-        ("@tauri-apps/api", "Tauri"),
+    // (依存名 or 前方一致パターン, 表示名, 種別)。
+    let rules: &[(&str, &str, &str)] = &[
+        // --- フレームワーク ---
+        ("next", "Next.js", CAT_FRAMEWORK),
+        ("nuxt", "Nuxt", CAT_FRAMEWORK),
+        ("@angular/core", "Angular", CAT_FRAMEWORK),
+        ("vue", "Vue", CAT_FRAMEWORK),
+        ("svelte", "Svelte", CAT_FRAMEWORK),
+        ("react-native", "React Native", CAT_FRAMEWORK),
+        ("react", "React", CAT_FRAMEWORK),
+        ("@remix-run/react", "Remix", CAT_FRAMEWORK),
+        ("gatsby", "Gatsby", CAT_FRAMEWORK),
+        ("astro", "Astro", CAT_FRAMEWORK),
+        ("solid-js", "SolidJS", CAT_FRAMEWORK),
+        ("vite", "Vite", CAT_FRAMEWORK),
+        ("webpack", "Webpack", CAT_FRAMEWORK),
+        ("express", "Express", CAT_FRAMEWORK),
+        ("@nestjs/core", "NestJS", CAT_FRAMEWORK),
+        ("koa", "Koa", CAT_FRAMEWORK),
+        ("fastify", "Fastify", CAT_FRAMEWORK),
+        ("hono", "Hono", CAT_FRAMEWORK),
+        ("electron", "Electron", CAT_FRAMEWORK),
+        ("@tauri-apps/api", "Tauri", CAT_FRAMEWORK),
+        // --- バックエンド・サービス ---
+        ("firebase", "Firebase", CAT_BACKEND),
+        ("firebase-admin", "Firebase", CAT_BACKEND),
+        ("firebase-functions", "Firebase", CAT_BACKEND),
+        ("@supabase/", "Supabase", CAT_BACKEND),
+        ("@vercel/", "Vercel", CAT_BACKEND),
+        ("vercel", "Vercel", CAT_BACKEND),
+        ("@netlify/", "Netlify", CAT_BACKEND),
+        ("aws-amplify", "AWS Amplify", CAT_BACKEND),
+        ("@aws-amplify/", "AWS Amplify", CAT_BACKEND),
+        ("aws-sdk", "AWS SDK", CAT_BACKEND),
+        ("@aws-sdk/", "AWS SDK", CAT_BACKEND),
+        ("@google-cloud/", "Google Cloud", CAT_BACKEND),
+        ("@azure/", "Azure", CAT_BACKEND),
+        ("@cloudflare/", "Cloudflare", CAT_BACKEND),
+        ("appwrite", "Appwrite", CAT_BACKEND),
+        ("pocketbase", "PocketBase", CAT_BACKEND),
+        ("@clerk/", "Clerk", CAT_BACKEND),
+        ("next-auth", "NextAuth", CAT_BACKEND),
+        ("@auth0/", "Auth0", CAT_BACKEND),
+        ("auth0", "Auth0", CAT_BACKEND),
+        ("stripe", "Stripe", CAT_BACKEND),
+        ("@stripe/", "Stripe", CAT_BACKEND),
+        ("@sentry/", "Sentry", CAT_BACKEND),
+        ("openai", "OpenAI", CAT_BACKEND),
+        ("@anthropic-ai/sdk", "Anthropic", CAT_BACKEND),
+        ("algoliasearch", "Algolia", CAT_BACKEND),
+        ("@sanity/client", "Sanity", CAT_BACKEND),
+        ("contentful", "Contentful", CAT_BACKEND),
+        ("twilio", "Twilio", CAT_BACKEND),
+        ("@sendgrid/mail", "SendGrid", CAT_BACKEND),
+        ("pusher", "Pusher", CAT_BACKEND),
+        ("graphql", "GraphQL", CAT_BACKEND),
+        ("@apollo/client", "Apollo", CAT_BACKEND),
+        ("socket.io", "Socket.IO", CAT_BACKEND),
+        // --- データベース・ORM ---
+        ("@prisma/client", "Prisma", CAT_DATABASE),
+        ("prisma", "Prisma", CAT_DATABASE),
+        ("drizzle-orm", "Drizzle", CAT_DATABASE),
+        ("typeorm", "TypeORM", CAT_DATABASE),
+        ("sequelize", "Sequelize", CAT_DATABASE),
+        ("mongoose", "MongoDB", CAT_DATABASE),
+        ("mongodb", "MongoDB", CAT_DATABASE),
+        ("pg", "PostgreSQL", CAT_DATABASE),
+        ("postgres", "PostgreSQL", CAT_DATABASE),
+        ("@planetscale/database", "PlanetScale", CAT_DATABASE),
+        ("mysql", "MySQL", CAT_DATABASE),
+        ("mysql2", "MySQL", CAT_DATABASE),
+        ("redis", "Redis", CAT_DATABASE),
+        ("ioredis", "Redis", CAT_DATABASE),
+        ("@upstash/redis", "Upstash Redis", CAT_DATABASE),
+        ("better-sqlite3", "SQLite", CAT_DATABASE),
+        ("sqlite3", "SQLite", CAT_DATABASE),
     ];
 
-    for (dep, fw) in map {
-        if deps.iter().any(|d| d == dep) {
-            out.push(FrameworkHit {
-                name: fw.to_string(),
-                detected_by: "package.json".to_string(),
-            });
-        }
-    }
+    match_dep_rules(&deps, rules, "package.json", out);
 }
 
-/// Cargo.toml の dependencies からフレームワークを判定。
-fn detect_from_cargo_toml(path: &Path, out: &mut Vec<FrameworkHit>) {
+/// Cargo.toml の dependencies から技術を判定する。
+fn detect_cargo(path: &Path, out: &mut Vec<TechHit>) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return,
@@ -438,56 +557,86 @@ fn detect_from_cargo_toml(path: &Path, out: &mut Vec<FrameworkHit>) {
         Err(_) => return,
     };
 
-    let deps = value.get("dependencies").and_then(|d| d.as_table());
-    let map: &[(&str, &str)] = &[
-        ("tauri", "Tauri"),
-        ("actix-web", "Actix Web"),
-        ("axum", "Axum"),
-        ("rocket", "Rocket"),
-        ("warp", "Warp"),
-        ("bevy", "Bevy"),
-        ("leptos", "Leptos"),
-        ("yew", "Yew"),
+    let deps: Vec<String> = value
+        .get("dependencies")
+        .and_then(|d| d.as_table())
+        .map(|t| t.keys().cloned().collect())
+        .unwrap_or_default();
+
+    let rules: &[(&str, &str, &str)] = &[
+        ("tauri", "Tauri", CAT_FRAMEWORK),
+        ("actix-web", "Actix Web", CAT_FRAMEWORK),
+        ("axum", "Axum", CAT_FRAMEWORK),
+        ("rocket", "Rocket", CAT_FRAMEWORK),
+        ("warp", "Warp", CAT_FRAMEWORK),
+        ("bevy", "Bevy", CAT_FRAMEWORK),
+        ("leptos", "Leptos", CAT_FRAMEWORK),
+        ("yew", "Yew", CAT_FRAMEWORK),
+        ("aws-config", "AWS SDK", CAT_BACKEND),
+        ("aws-sdk-", "AWS SDK", CAT_BACKEND),
+        ("firebase-rs", "Firebase", CAT_BACKEND),
+        ("sqlx", "SQLx", CAT_DATABASE),
+        ("diesel", "Diesel", CAT_DATABASE),
+        ("sea-orm", "SeaORM", CAT_DATABASE),
+        ("mongodb", "MongoDB", CAT_DATABASE),
+        ("redis", "Redis", CAT_DATABASE),
     ];
-    if let Some(deps) = deps {
-        for (dep, fw) in map {
-            if deps.contains_key(*dep) {
-                out.push(FrameworkHit {
-                    name: fw.to_string(),
-                    detected_by: "Cargo.toml".to_string(),
-                });
-            }
+
+    // Cargo の crate 名はハイフン区切り。aws-sdk-* は前方一致したい。
+    for (pat, name, cat) in rules {
+        let hit = if pat.ends_with('-') {
+            deps.iter().any(|d| d.starts_with(pat))
+        } else {
+            deps.iter().any(|d| d == pat)
+        };
+        if hit {
+            push_tech(out, name, cat, "Cargo.toml");
         }
     }
 }
 
-/// requirements.txt / pyproject.toml の中身から Python フレームワークを判定。
-fn detect_python_deps(path: &Path, out: &mut Vec<FrameworkHit>, by: &str) {
+/// requirements.txt / pyproject.toml / Pipfile の中身から Python 系技術を判定する。
+fn detect_python_deps(path: &Path, out: &mut Vec<TechHit>, by: &str) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c.to_lowercase(),
         Err(_) => return,
     };
-    let map: &[(&str, &str)] = &[
-        ("django", "Django"),
-        ("fastapi", "FastAPI"),
-        ("flask", "Flask"),
-        ("streamlit", "Streamlit"),
-        ("pyramid", "Pyramid"),
-        ("tornado", "Tornado"),
-        ("scrapy", "Scrapy"),
+    // (中身に含まれる文字列, 表示名, 種別)。
+    let rules: &[(&str, &str, &str)] = &[
+        // フレームワーク
+        ("django", "Django", CAT_FRAMEWORK),
+        ("fastapi", "FastAPI", CAT_FRAMEWORK),
+        ("flask", "Flask", CAT_FRAMEWORK),
+        ("streamlit", "Streamlit", CAT_FRAMEWORK),
+        ("pyramid", "Pyramid", CAT_FRAMEWORK),
+        ("tornado", "Tornado", CAT_FRAMEWORK),
+        ("scrapy", "Scrapy", CAT_FRAMEWORK),
+        // バックエンド・サービス
+        ("firebase-admin", "Firebase", CAT_BACKEND),
+        ("boto3", "AWS SDK", CAT_BACKEND),
+        ("google-cloud", "Google Cloud", CAT_BACKEND),
+        ("supabase", "Supabase", CAT_BACKEND),
+        ("stripe", "Stripe", CAT_BACKEND),
+        ("openai", "OpenAI", CAT_BACKEND),
+        ("anthropic", "Anthropic", CAT_BACKEND),
+        ("sentry-sdk", "Sentry", CAT_BACKEND),
+        // データベース
+        ("psycopg2", "PostgreSQL", CAT_DATABASE),
+        ("asyncpg", "PostgreSQL", CAT_DATABASE),
+        ("pymysql", "MySQL", CAT_DATABASE),
+        ("pymongo", "MongoDB", CAT_DATABASE),
+        ("redis", "Redis", CAT_DATABASE),
+        ("sqlalchemy", "SQLAlchemy", CAT_DATABASE),
     ];
-    for (dep, fw) in map {
-        if content.contains(dep) {
-            out.push(FrameworkHit {
-                name: fw.to_string(),
-                detected_by: by.to_string(),
-            });
+    for (needle, name, cat) in rules {
+        if content.contains(needle) {
+            push_tech(out, name, cat, by);
         }
     }
 }
 
-/// composer.json の require から PHP フレームワークを判定。
-fn detect_from_composer_json(path: &Path, out: &mut Vec<FrameworkHit>) {
+/// composer.json の require から PHP 系技術を判定する。
+fn detect_composer(path: &Path, out: &mut Vec<TechHit>) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return,
@@ -502,20 +651,16 @@ fn detect_from_composer_json(path: &Path, out: &mut Vec<FrameworkHit>) {
             deps.extend(obj.keys().cloned());
         }
     }
-    let map: &[(&str, &str)] = &[
-        ("laravel/framework", "Laravel"),
-        ("symfony/symfony", "Symfony"),
-        ("symfony/framework-bundle", "Symfony"),
-        ("cakephp/cakephp", "CakePHP"),
+    let rules: &[(&str, &str, &str)] = &[
+        ("laravel/framework", "Laravel", CAT_FRAMEWORK),
+        ("symfony/symfony", "Symfony", CAT_FRAMEWORK),
+        ("symfony/framework-bundle", "Symfony", CAT_FRAMEWORK),
+        ("cakephp/cakephp", "CakePHP", CAT_FRAMEWORK),
+        ("kreait/firebase-php", "Firebase", CAT_BACKEND),
+        ("aws/aws-sdk-php", "AWS SDK", CAT_BACKEND),
+        ("stripe/stripe-php", "Stripe", CAT_BACKEND),
     ];
-    for (dep, fw) in map {
-        if deps.iter().any(|d| d == dep) {
-            out.push(FrameworkHit {
-                name: fw.to_string(),
-                detected_by: "composer.json".to_string(),
-            });
-        }
-    }
+    match_dep_rules(&deps, rules, "composer.json", out);
 }
 
 #[cfg(test)]
@@ -590,6 +735,51 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// バックエンド・サービスとデータベースの検出とカテゴリ分けを確認する。
+    #[test]
+    fn detects_backend_services() {
+        let dir = std::env::temp_dir().join(format!("langtest_be_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let pkg = r#"{
+            "dependencies": {
+                "next": "14",
+                "firebase": "10",
+                "@supabase/supabase-js": "2",
+                "@prisma/client": "5",
+                "stripe": "14",
+                "@aws-sdk/client-s3": "3"
+            }
+        }"#;
+        std::fs::write(dir.join("package.json"), pkg).unwrap();
+        std::fs::write(dir.join("vercel.json"), "{}").unwrap();
+        std::fs::write(dir.join("firebase.json"), "{}").unwrap();
+        std::fs::create_dir_all(dir.join("supabase")).unwrap();
+
+        let result = analyze(dir.to_str().unwrap()).expect("解析失敗");
+        let cat_of = |name: &str| {
+            result
+                .technologies
+                .iter()
+                .find(|t| t.name == name)
+                .map(|t| t.category.as_str())
+        };
+
+        assert_eq!(cat_of("Next.js"), Some("framework"));
+        assert_eq!(cat_of("Firebase"), Some("backend"));
+        assert_eq!(cat_of("Supabase"), Some("backend"));
+        assert_eq!(cat_of("Vercel"), Some("backend"));
+        assert_eq!(cat_of("Stripe"), Some("backend"));
+        assert_eq!(cat_of("AWS SDK"), Some("backend"));
+        assert_eq!(cat_of("Prisma"), Some("database"));
+
+        // 同名は重複しない（firebase.json と package.json 両方から Firebase）。
+        let firebase_count = result.technologies.iter().filter(|t| t.name == "Firebase").count();
+        assert_eq!(firebase_count, 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// このプロジェクト自身（src-tauri の親）を解析し、
     /// TypeScript / Rust と Tauri / React / Vite が検出されることを確認する。
     #[test]
@@ -599,10 +789,10 @@ mod tests {
         assert!(langs.contains(&"TypeScript"), "languages={:?}", langs);
         assert!(langs.contains(&"Rust"), "languages={:?}", langs);
 
-        let fws: Vec<&str> = result.frameworks.iter().map(|f| f.name.as_str()).collect();
-        assert!(fws.contains(&"Tauri"), "frameworks={:?}", fws);
-        assert!(fws.contains(&"React"), "frameworks={:?}", fws);
-        assert!(fws.contains(&"Vite"), "frameworks={:?}", fws);
+        let fws: Vec<&str> = result.technologies.iter().map(|f| f.name.as_str()).collect();
+        assert!(fws.contains(&"Tauri"), "technologies={:?}", fws);
+        assert!(fws.contains(&"React"), "technologies={:?}", fws);
+        assert!(fws.contains(&"Vite"), "technologies={:?}", fws);
 
         // node_modules が除外されているか（あれば膨大になる）。
         assert!(!result.files.iter().any(|f| f.path.contains("node_modules")));

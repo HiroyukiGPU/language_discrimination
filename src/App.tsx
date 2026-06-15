@@ -2,7 +2,14 @@ import { useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { DonutChart } from "./DonutChart";
-import { AnalysisResult, colorFor, DETECTION_LABELS } from "./types";
+import {
+  AnalysisResult,
+  colorFor,
+  DETECTION_LABELS,
+  CATEGORY_META,
+  CATEGORY_ORDER,
+  techColor,
+} from "./types";
 import "./App.css";
 
 function App() {
@@ -147,17 +154,46 @@ function App() {
           </section>
 
           <section className="card">
-            <h2>検出したフレームワーク</h2>
-            {result.frameworks.length === 0 ? (
-              <p className="muted">フレームワークは検出されませんでした。</p>
+            <h2>検出した技術スタック</h2>
+            {result.technologies.length === 0 ? (
+              <p className="muted">フレームワーク・サービスは検出されませんでした。</p>
             ) : (
-              <div className="chips">
-                {result.frameworks.map((f) => (
-                  <span key={f.name} className="chip" title={`根拠: ${f.detected_by}`}>
-                    {f.name}
-                    <small>{f.detected_by}</small>
-                  </span>
-                ))}
+              <div className="tech-groups">
+                {CATEGORY_ORDER.map((cat) => {
+                  const items = result.technologies.filter((t) => t.category === cat);
+                  if (items.length === 0) return null;
+                  const meta = CATEGORY_META[cat];
+                  return (
+                    <div className="tech-group" key={cat}>
+                      <div className="tech-group-head">
+                        <span className="tech-group-icon">{meta.icon}</span>
+                        <span className="tech-group-title">{meta.label}</span>
+                        <span className="tech-group-count">{items.length}</span>
+                      </div>
+                      <div className="tech-cards">
+                        {items.map((t) => {
+                          const color = techColor(t.name, t.category);
+                          return (
+                            <div
+                              className="tech-card"
+                              key={t.name}
+                              style={{ ["--tech" as string]: color }}
+                              title={`根拠: ${t.detected_by}`}
+                            >
+                              <span className="tech-mark" style={{ background: color }}>
+                                {t.name.charAt(0).toUpperCase()}
+                              </span>
+                              <span className="tech-info">
+                                <span className="tech-name">{t.name}</span>
+                                <span className="tech-by">{t.detected_by}</span>
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </section>
